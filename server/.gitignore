@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+
+# Runtime files
+*.log
+.env
+.env.*
+!.env.example
