@@ -816,7 +816,7 @@ const ProjectPage = () => {
 
   const requestSchemaSuggestions = useCallback(async () => {
     if (!project || !user) {
-      setSuggestionError('You must be logged in and inside a project to request suggestions.');
+      setSuggestionError('You must be logged in and inside a project to run Build with AI.');
       return;
     }
 
@@ -856,7 +856,7 @@ const ProjectPage = () => {
       setSuggestionError(
         requestError instanceof Error
           ? requestError.message
-          : 'Unable to fetch schema suggestions.',
+          : 'Unable to generate AI updates for this canvas.',
       );
     } finally {
       setIsFetchingSuggestions(false);
@@ -936,7 +936,7 @@ const ProjectPage = () => {
             onClick={openSuggestionsModal}
             className='inline-flex w-fit rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/15'
           >
-            AI Suggestions
+            Build with AI
           </button>
 
           <button
@@ -1260,19 +1260,19 @@ const ProjectPage = () => {
       {showSuggestionsModal && (
         <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4'>
           <div className='w-full max-w-5xl rounded-2xl border border-white/15 bg-zinc-900 p-5 shadow-2xl'>
-            <h2 className='text-lg font-semibold text-white'>AI Schema Suggestions</h2>
+            <h2 className='text-lg font-semibold text-white'>Build with AI</h2>
             <p className='mt-1 text-sm text-white/70'>
-              Send your current schema to Grok and get optimization suggestions.
+              Describe any schema or canvas change you want, and AI will propose updates you can preview before applying.
             </p>
 
             <label htmlFor='ai-context' className='mt-4 block text-sm text-white/80'>
-              Extra context for AI (optional)
+              What should AI build or change?
             </label>
             <textarea
               id='ai-context'
               value={suggestionContext}
               onChange={(event) => setSuggestionContext(event.target.value)}
-              placeholder='Example: prioritize read-heavy queries, keep naming conventions snake_case, optimize for PostgreSQL.'
+              placeholder='Example: add an orders table linked to users.'
               className='mt-2 h-24 w-full resize-none rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40'
             />
 
@@ -1283,7 +1283,7 @@ const ProjectPage = () => {
                 disabled={isFetchingSuggestions}
                 className='rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60'
               >
-                {isFetchingSuggestions ? 'Requesting...' : 'Get suggestions'}
+                {isFetchingSuggestions ? 'Generating...' : 'Generate with AI'}
               </button>
             </div>
 
@@ -1291,7 +1291,7 @@ const ProjectPage = () => {
 
             {suggestionsText ? (
               <div className='mt-4 rounded-xl border border-white/10 bg-black/25 p-3'>
-                <p className='text-sm font-medium text-white'>Textual suggestions</p>
+                <p className='text-sm font-medium text-white'>AI response</p>
                 <pre className='mt-2 max-h-44 overflow-auto whitespace-pre-wrap text-xs leading-5 text-white/85'>
                   {suggestionsText}
                 </pre>
@@ -1338,7 +1338,7 @@ const ProjectPage = () => {
                 disabled={!suggestedCanvas}
                 className='rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50'
               >
-                Apply suggested changes
+                Apply to canvas
               </button>
             </div>
           </div>
