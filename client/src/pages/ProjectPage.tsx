@@ -93,6 +93,11 @@ type SqlExportResponse = {
   sqlCommands: string;
 };
 
+type DatabaseImportResponse = {
+  summaryText: string;
+  importedCanvas: CanvasPayload;
+};
+
 type SqlDialect = 'postgresql' | 'mysql' | 'sqlite';
 
 type ForeignKeySide = 'source' | 'target';
@@ -100,6 +105,7 @@ type ForeignKeySide = 'source' | 'target';
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
 const SUGGESTIONS_ENDPOINT = `${API_BASE_URL}/api/ai/schema-suggestions`;
 const SQL_EXPORT_ENDPOINT = `${API_BASE_URL}/api/ai/export-sql`;
+const IMPORT_SCHEMA_ENDPOINT = `${API_BASE_URL}/api/import/schema`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null;
@@ -162,6 +168,40 @@ const parseSqlExportResponse = (value: unknown): SqlExportResponse | null => {
 
   return {
     sqlCommands: value.sqlCommands,
+  };
+};
+
+const parseImportResponse = (value: unknown): DatabaseImportResponse | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const summaryText =
+    typeof value.summaryText === 'string'
+      ? value.summaryText
+      : typeof value.message === 'string'
+        ? value.message
+        : typeof value.summary === 'string'
+          ? value.summary
+          : 'Database schema imported successfully.';
+
+  const importedCanvasCandidate = isCanvasPayload(value.importedCanvas)
+    ? value.importedCanvas
+    : isCanvasPayload(value.canvasData)
+      ? value.canvasData
+      : isCanvasPayload(value.canvas)
+        ? value.canvas
+        : isCanvasPayload(value.suggestedCanvas)
+          ? value.suggestedCanvas
+          : null;
+
+  if (!importedCanvasCandidate) {
+    return null;
+  }
+
+  return {
+    summaryText,
+    importedCanvas: importedCanvasCandidate,
   };
 };
 
@@ -312,6 +352,14 @@ const ProjectPage = () => {
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [showSqlExportModal, setShowSqlExportModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [isImportingSchema, setIsImportingSchema] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [importConnectionString, setImportConnectionString] = useState('');
+  const [importDialect, setImportDialect] = useState<SqlDialect>('postgresql');
+  const [importSummaryText, setImportSummaryText] = useState('');
+  const [importedCanvas, setImportedCanvas] = useState<CanvasPayload | null>(null);
+  const [showImportedCanvasPreview, setShowImportedCanvasPreview] = useState(false);
   const [isFetchingSqlExport, setIsFetchingSqlExport] = useState(false);
   const [sqlExportError, setSqlExportError] = useState('');
   const [sqlCommands, setSqlCommands] = useState('');
@@ -779,6 +827,92 @@ const ProjectPage = () => {
     void requestSqlExport();
   }, [requestSqlExport]);
 
+  const openImportModal = useCallback(() => {
+    setShowImportModal(true);
+    setImportError('');
+    setImportConnectionString('');
+    setImportDialect('postgresql');
+    setImportSummaryText('');
+    setImportedCanvas(null);
+    setShowImportedCanvasPreview(false);
+  }, []);
+
+  const requestDatabaseImport = useCallback(async () => {
+    if (!project || !user) {
+      setImportError('You must be logged in and inside a project to import a database schema.');
+      return;
+    }
+
+    const connectionString = importConnectionString.trim();
+
+    if (!connectionString) {
+      setImportError('Connection string is required.');
+      return;
+    }
+
+    setIsImportingSchema(true);
+    setImportError('');
+    setImportSummaryText('');
+    setImportedCanvas(null);
+    setShowImportedCanvasPreview(false);
+
+    try {
+      const response = await fetch(IMPORT_SCHEMA_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          projectId: project.id,
+          connectionString,
+          dialect: importDialect,
+        }),
+      });
+
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const message = isRecord(body) && typeof body.error === 'string'
+          ? body.error
+          : `Request failed with status ${response.status}`;
+        throw new Error(message);
+      }
+
+      const data: unknown = await response.json();
+      const parsedResponse = parseImportResponse(data);
+
+      if (!parsedResponse) {
+        throw new Error('Response is missing a valid imported canvas payload.');
+      }
+
+      setImportSummaryText(parsedResponse.summaryText);
+      setImportedCanvas(parsedResponse.importedCanvas);
+      setShowImportedCanvasPreview(true);
+    } catch (requestError) {
+      setImportError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to import the database schema.',
+      );
+    } finally {
+      setIsImportingSchema(false);
+    }
+  }, [importConnectionString, importDialect, project, user]);
+
+  const applyImportedCanvas = useCallback(() => {
+    if (!importedCanvas) {
+      setImportError('No imported canvas is available to apply.');
+      return;
+    }
+
+    setNodes(importedCanvas.flow.nodes);
+    setEdges(importedCanvas.flow.edges);
+    setShowImportModal(false);
+    setImportError('');
+    setImportSummaryText('');
+    setImportedCanvas(null);
+    setShowImportedCanvasPreview(false);
+  }, [importedCanvas, setEdges, setNodes]);
+
   const copySqlCommands = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(sqlCommands);
@@ -929,6 +1063,14 @@ const ProjectPage = () => {
             className='inline-flex w-fit rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/15'
           >
             Add Node
+          </button>
+
+          <button
+            type='button'
+            onClick={openImportModal}
+            className='inline-flex w-fit rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/15'
+          >
+            Import Database
           </button>
 
           <button
@@ -1162,7 +1304,6 @@ const ProjectPage = () => {
           </div>
         </div>
       )}
-
       {showSqlExportModal ? (
         <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4'>
           <div className='w-full max-w-4xl rounded-2xl border border-white/15 bg-zinc-900 p-5 shadow-2xl'>
@@ -1253,6 +1394,131 @@ const ProjectPage = () => {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showImportModal ? (
+        <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4'>
+          <div className='w-full max-w-5xl rounded-2xl border border-white/15 bg-zinc-900 p-5 shadow-2xl'>
+            <h2 className='text-lg font-semibold text-white'>Import Database Schema</h2>
+            <p className='mt-1 text-sm text-white/70'>
+              Connect to an existing database, read its catalog, and turn it into table nodes and relationship edges.
+            </p>
+
+            <div className='mt-4 grid gap-3 sm:grid-cols-[1fr_220px] sm:items-end'>
+              <div>
+                <label htmlFor='import-connection-string' className='block text-xs text-white/75'>
+                  Connection string
+                </label>
+                <textarea
+                  id='import-connection-string'
+                  value={importConnectionString}
+                  onChange={(event) => setImportConnectionString(event.target.value)}
+                  placeholder='postgresql://user:password@host:5432/database'
+                  className='mt-1.5 h-24 w-full resize-none rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40'
+                />
+              </div>
+              <div>
+                <label htmlFor='import-dialect' className='block text-xs text-white/75'>
+                  Database type
+                </label>
+                <select
+                  id='import-dialect'
+                  value={importDialect}
+                  onChange={(event) => setImportDialect(event.target.value as SqlDialect)}
+                  className='mt-1.5 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40'
+                >
+                  <option value='postgresql'>PostgreSQL</option>
+                  <option value='mysql'>MySQL</option>
+                  <option value='sqlite'>SQLite</option>
+                </select>
+              </div>
+            </div>
+
+            <div className='mt-4 flex flex-wrap items-center gap-3'>
+              <button
+                type='button'
+                onClick={() => void requestDatabaseImport()}
+                disabled={isImportingSchema}
+                className='rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60'
+              >
+                {isImportingSchema ? 'Importing...' : 'Import schema'}
+              </button>
+              <button
+                type='button'
+                onClick={() => setShowImportModal(false)}
+                className='rounded-full border border-white/20 px-4 py-2 text-sm text-white/90 transition hover:bg-white/10'
+              >
+                Close
+              </button>
+            </div>
+
+            {isImportingSchema ? (
+              <div className='mt-4 rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-white/80'>
+                Reading database catalog and building a canvas preview...
+              </div>
+            ) : null}
+
+            {importError ? <p className='mt-4 text-sm text-red-300'>{importError}</p> : null}
+
+            {importSummaryText ? (
+              <div className='mt-4 rounded-xl border border-white/10 bg-black/25 p-3'>
+                <p className='text-sm font-medium text-white'>Import result</p>
+                <pre className='mt-2 max-h-32 overflow-auto whitespace-pre-wrap text-xs leading-5 text-white/85'>
+                  {importSummaryText}
+                </pre>
+              </div>
+            ) : null}
+
+            {importedCanvas ? (
+              <div className='mt-4 rounded-xl border border-white/10 bg-black/25 p-3'>
+                <div className='flex flex-wrap items-center justify-between gap-3'>
+                  <div>
+                    <p className='text-sm font-medium text-white'>Imported canvas preview</p>
+                    <p className='mt-1 text-xs text-white/65'>
+                      Preview the imported schema before applying it to the current project.
+                    </p>
+                  </div>
+                  <div className='flex flex-wrap gap-2'>
+                    <button
+                      type='button'
+                      onClick={() => setShowImportedCanvasPreview((current) => !current)}
+                      className='rounded-full border border-white/20 px-3 py-1.5 text-xs text-white/90 transition hover:bg-white/10'
+                    >
+                      {showImportedCanvasPreview ? 'Hide preview' : 'Preview schema'}
+                    </button>
+                    <button
+                      type='button'
+                      onClick={applyImportedCanvas}
+                      className='rounded-full bg-white px-3 py-1.5 text-xs font-medium text-black transition hover:bg-zinc-200'
+                    >
+                      Apply to canvas
+                    </button>
+                  </div>
+                </div>
+
+                {showImportedCanvasPreview ? (
+                  <div className='mt-3 h-[42vh] rounded-xl border border-white/10 bg-black/40'>
+                    <ReactFlow
+                      nodes={importedCanvas.flow.nodes}
+                      edges={importedCanvas.flow.edges}
+                      onNodesChange={() => undefined}
+                      onEdgesChange={() => undefined}
+                      onConnect={() => undefined}
+                      nodeTypes={nodeTypes}
+                      edgeTypes={edgeTypes}
+                      defaultEdgeOptions={{ type: 'deletable' }}
+                      fitView
+                      nodesDraggable={false}
+                      nodesConnectable={false}
+                      elementsSelectable={false}
+                      zoomOnDoubleClick={false}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express from 'express';
 import { aiRoutes } from './routes/aiRoutes';
+import { importRoutes } from './routes/importRoutes';
 
 export const createApp = () => {
 	const app = express();
@@ -13,6 +14,7 @@ export const createApp = () => {
 	});
 
 	app.use('/api/ai', aiRoutes);
+	app.use('/api/import', importRoutes);
 
 	app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
 		const message = error instanceof Error ? error.message : 'Unknown server error';
