@@ -1406,20 +1406,21 @@ const ProjectPage = () => {
               Connect to an existing database, read its catalog, and turn it into table nodes and relationship edges.
             </p>
 
-            <div className='mt-4 grid gap-3 sm:grid-cols-[1fr_220px] sm:items-end'>
-              <div>
+            <div className='mt-5 grid gap-4 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-start'>
+              <div className='min-w-0'>
                 <label htmlFor='import-connection-string' className='block text-xs text-white/75'>
                   Connection string
                 </label>
-                <textarea
+                <input
                   id='import-connection-string'
+                  type='text'
                   value={importConnectionString}
                   onChange={(event) => setImportConnectionString(event.target.value)}
                   placeholder='postgresql://user:password@host:5432/database'
-                  className='mt-1.5 h-24 w-full resize-none rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40'
+                  className='mt-1.5 h-11 w-full rounded-lg border border-white/15 bg-black/40 px-3 text-sm text-white outline-none transition placeholder:text-white/35 focus:border-white/40'
                 />
               </div>
-              <div>
+              <div className='min-w-0'>
                 <label htmlFor='import-dialect' className='block text-xs text-white/75'>
                   Database type
                 </label>
@@ -1427,7 +1428,7 @@ const ProjectPage = () => {
                   id='import-dialect'
                   value={importDialect}
                   onChange={(event) => setImportDialect(event.target.value as SqlDialect)}
-                  className='mt-1.5 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-white/40'
+                  className='mt-1.5 h-11 w-full rounded-lg border border-white/15 bg-black/40 px-3 text-sm text-white outline-none transition focus:border-white/40'
                 >
                   <option value='postgresql'>PostgreSQL</option>
                   <option value='mysql'>MySQL</option>
