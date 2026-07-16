@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import * as dns from 'node:dns';
+import { promises as dnsPromises } from 'node:dns';
 import { Client } from 'pg';
 import { createConnection, type RowDataPacket } from 'mysql2/promise';
 
@@ -156,6 +158,16 @@ type Catalog = {
   foreignKeys: ForeignKeyRow[];
 };
 
+type ConnectionDetails = {
+  hostname: string;
+  port: number;
+  username: string;
+  password: string;
+  database: string;
+};
+
+const PUBLIC_DNS_SERVERS = ['1.1.1.1', '8.8.8.8'];
+
 const SUPPORTED_DIALECTS: DatabaseDialect[] = ['postgresql', 'mysql', 'sqlite'];
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -214,6 +226,56 @@ const quoteSqliteLiteral = (value: string): string => {
   return `'${value.replace(/'/g, "''")}'`;
 };
 
+const parseConnectionUrl = (connectionString: string): URL => {
+  return new URL(connectionString.trim());
+};
+
+const parsePostgresConnectionDetails = (connectionString: string): ConnectionDetails => {
+  const url = parseConnectionUrl(connectionString);
+
+  return {
+    hostname: url.hostname,
+    port: url.port ? Number(url.port) : 5432,
+    username: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database: decodeURIComponent(url.pathname.replace(/^\//, '')) || 'postgres',
+  };
+};
+
+const parseMySqlConnectionDetails = (connectionString: string): ConnectionDetails => {
+  const url = parseConnectionUrl(connectionString);
+
+  return {
+    hostname: url.hostname,
+    port: url.port ? Number(url.port) : 3306,
+    username: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database: decodeURIComponent(url.pathname.replace(/^\//, '')),
+  };
+};
+
+const resolveHostWithFallback = async (hostname: string): Promise<string[]> => {
+  const originalServers = dns.getServers();
+
+  try {
+    dns.setServers(PUBLIC_DNS_SERVERS);
+
+    const [ipv6Result, ipv4Result] = await Promise.allSettled([
+      dnsPromises.resolve6(hostname),
+      dnsPromises.resolve4(hostname),
+    ]);
+
+    const addresses = [
+      ...(ipv6Result.status === 'fulfilled' ? ipv6Result.value : []),
+      ...(ipv4Result.status === 'fulfilled' ? ipv4Result.value : []),
+    ];
+
+    return Array.from(new Set(addresses));
+  } finally {
+    dns.setServers(originalServers);
+  }
+};
+
 const getDatabaseNameFromUri = (connectionString: string): string => {
   try {
     const url = new URL(connectionString.trim());
@@ -224,108 +286,153 @@ const getDatabaseNameFromUri = (connectionString: string): string => {
 };
 
 const fetchPostgresCatalog = async (connectionString: string, schemaFilter?: string): Promise<Catalog> => {
-  const client = new Client({ connectionString, statement_timeout: 10000 });
+  const details = parsePostgresConnectionDetails(connectionString);
+  const resolvedHosts = await resolveHostWithFallback(details.hostname);
 
-  await client.connect();
-
-  try {
-    const schemaParams: string[] = [];
-    const schemaValues: string[] = [];
-
-    if (schemaFilter?.trim()) {
-      schemaValues.push(schemaFilter.trim());
-      schemaParams.push(`$${schemaValues.length}`);
-    }
-
-    const schemaPredicate = schemaParams.length ? `and table_schema = ${schemaParams[0]}` : '';
-
-    const tablesQuery = `
-      select table_schema, table_name
-      from information_schema.tables
-      where table_type = 'BASE TABLE'
-        and table_schema not in ('pg_catalog', 'information_schema')
-        ${schemaPredicate}
-      order by table_schema, table_name
-    `;
-
-    const columnsQuery = `
-      select table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
-      from information_schema.columns
-      where table_schema not in ('pg_catalog', 'information_schema')
-        ${schemaPredicate}
-      order by table_schema, table_name, ordinal_position
-    `;
-
-    const primaryKeysQuery = `
-      select kcu.table_schema, kcu.table_name, kcu.column_name, kcu.ordinal_position
-      from information_schema.table_constraints tc
-      join information_schema.key_column_usage kcu
-        on tc.constraint_name = kcu.constraint_name
-       and tc.table_schema = kcu.table_schema
-       and tc.table_name = kcu.table_name
-      where tc.constraint_type = 'PRIMARY KEY'
-        ${schemaPredicate ? `and tc.table_schema = ${schemaParams[0]}` : ''}
-      order by kcu.table_schema, kcu.table_name, kcu.ordinal_position
-    `;
-
-    const uniqueQuery = `
-      select kcu.table_schema, kcu.table_name, tc.constraint_name, kcu.column_name, kcu.ordinal_position
-      from information_schema.table_constraints tc
-      join information_schema.key_column_usage kcu
-        on tc.constraint_name = kcu.constraint_name
-       and tc.table_schema = kcu.table_schema
-       and tc.table_name = kcu.table_name
-      where tc.constraint_type = 'UNIQUE'
-        ${schemaPredicate ? `and tc.table_schema = ${schemaParams[0]}` : ''}
-      order by kcu.table_schema, kcu.table_name, tc.constraint_name, kcu.ordinal_position
-    `;
-
-    const foreignKeysQuery = `
-      select
-        tc.table_schema,
-        tc.table_name,
-        kcu.column_name,
-        ccu.table_schema as referenced_schema,
-        ccu.table_name as referenced_table,
-        ccu.column_name as referenced_column,
-        tc.constraint_name,
-        kcu.ordinal_position
-      from information_schema.table_constraints tc
-      join information_schema.key_column_usage kcu
-        on tc.constraint_name = kcu.constraint_name
-       and tc.table_schema = kcu.table_schema
-       and tc.table_name = kcu.table_name
-      join information_schema.constraint_column_usage ccu
-        on ccu.constraint_name = tc.constraint_name
-      where tc.constraint_type = 'FOREIGN KEY'
-        ${schemaPredicate ? `and tc.table_schema = ${schemaParams[0]}` : ''}
-      order by tc.table_schema, tc.table_name, tc.constraint_name, kcu.ordinal_position
-    `;
-
-    const [tablesResult, columnsResult, primaryKeysResult, uniqueResult, foreignKeysResult] = await Promise.all([
-      client.query<TableRow>(schemaValues.length ? { text: tablesQuery, values: schemaValues } : tablesQuery),
-      client.query<ColumnRow>(schemaValues.length ? { text: columnsQuery, values: schemaValues } : columnsQuery),
-      client.query<PrimaryKeyRow>(schemaValues.length ? { text: primaryKeysQuery, values: schemaValues } : primaryKeysQuery),
-      client.query<UniqueConstraintRow>(schemaValues.length ? { text: uniqueQuery, values: schemaValues } : uniqueQuery),
-      client.query<ForeignKeyRow>(schemaValues.length ? { text: foreignKeysQuery, values: schemaValues } : foreignKeysQuery),
-    ]);
-
-    return {
-      tables: tablesResult.rows,
-      columns: columnsResult.rows,
-      primaryKeys: primaryKeysResult.rows,
-      uniques: uniqueResult.rows,
-      foreignKeys: foreignKeysResult.rows,
-    };
-  } finally {
-    await client.end();
+  if (resolvedHosts.length === 0) {
+    throw new Error(`Unable to resolve host: ${details.hostname}`);
   }
+
+  let lastError: unknown = null;
+
+  for (const resolvedHost of resolvedHosts) {
+    const client = new Client({
+      host: resolvedHost,
+      port: details.port,
+      user: details.username,
+      password: details.password,
+      database: details.database,
+      connectionTimeoutMillis: 10000,
+      ssl: {
+        servername: details.hostname,
+        rejectUnauthorized: false,
+      },
+    });
+
+    try {
+      await client.connect();
+
+      const schemaParams: string[] = [];
+      const schemaValues: string[] = [];
+
+      if (schemaFilter?.trim()) {
+        schemaValues.push(schemaFilter.trim());
+        schemaParams.push(`$${schemaValues.length}`);
+      }
+
+      const schemaPredicate = schemaParams.length ? `and table_schema = ${schemaParams[0]}` : '';
+
+      const tablesQuery = `
+        select table_schema, table_name
+        from information_schema.tables
+        where table_type = 'BASE TABLE'
+          and table_schema not in ('pg_catalog', 'information_schema')
+          ${schemaPredicate}
+        order by table_schema, table_name
+      `;
+
+      const columnsQuery = `
+        select table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
+        from information_schema.columns
+        where table_schema not in ('pg_catalog', 'information_schema')
+          ${schemaPredicate}
+        order by table_schema, table_name, ordinal_position
+      `;
+
+      const primaryKeysQuery = `
+        select kcu.table_schema, kcu.table_name, kcu.column_name, kcu.ordinal_position
+        from information_schema.table_constraints tc
+        join information_schema.key_column_usage kcu
+          on tc.constraint_name = kcu.constraint_name
+         and tc.table_schema = kcu.table_schema
+         and tc.table_name = kcu.table_name
+        where tc.constraint_type = 'PRIMARY KEY'
+          ${schemaPredicate ? `and tc.table_schema = ${schemaParams[0]}` : ''}
+        order by kcu.table_schema, kcu.table_name, kcu.ordinal_position
+      `;
+
+      const uniqueQuery = `
+        select kcu.table_schema, kcu.table_name, tc.constraint_name, kcu.column_name, kcu.ordinal_position
+        from information_schema.table_constraints tc
+        join information_schema.key_column_usage kcu
+          on tc.constraint_name = kcu.constraint_name
+         and tc.table_schema = kcu.table_schema
+         and tc.table_name = kcu.table_name
+        where tc.constraint_type = 'UNIQUE'
+          ${schemaPredicate ? `and tc.table_schema = ${schemaParams[0]}` : ''}
+        order by kcu.table_schema, kcu.table_name, tc.constraint_name, kcu.ordinal_position
+      `;
+
+      const foreignKeysQuery = `
+        select
+          tc.table_schema,
+          tc.table_name,
+          kcu.column_name,
+          ccu.table_schema as referenced_schema,
+          ccu.table_name as referenced_table,
+          ccu.column_name as referenced_column,
+          tc.constraint_name,
+          kcu.ordinal_position
+        from information_schema.table_constraints tc
+        join information_schema.key_column_usage kcu
+          on tc.constraint_name = kcu.constraint_name
+         and tc.table_schema = kcu.table_schema
+         and tc.table_name = kcu.table_name
+        join information_schema.constraint_column_usage ccu
+          on ccu.constraint_name = tc.constraint_name
+        where tc.constraint_type = 'FOREIGN KEY'
+          ${schemaPredicate ? `and tc.table_schema = ${schemaParams[0]}` : ''}
+        order by tc.table_schema, tc.table_name, tc.constraint_name, kcu.ordinal_position
+      `;
+
+      const [tablesResult, columnsResult, primaryKeysResult, uniqueResult, foreignKeysResult] = await Promise.all([
+        client.query<TableRow>(schemaValues.length ? { text: tablesQuery, values: schemaValues } : tablesQuery),
+        client.query<ColumnRow>(schemaValues.length ? { text: columnsQuery, values: schemaValues } : columnsQuery),
+        client.query<PrimaryKeyRow>(schemaValues.length ? { text: primaryKeysQuery, values: schemaValues } : primaryKeysQuery),
+        client.query<UniqueConstraintRow>(schemaValues.length ? { text: uniqueQuery, values: schemaValues } : uniqueQuery),
+        client.query<ForeignKeyRow>(schemaValues.length ? { text: foreignKeysQuery, values: schemaValues } : foreignKeysQuery),
+      ]);
+
+      return {
+        tables: tablesResult.rows,
+        columns: columnsResult.rows,
+        primaryKeys: primaryKeysResult.rows,
+        uniques: uniqueResult.rows,
+        foreignKeys: foreignKeysResult.rows,
+      };
+    } catch (error) {
+      lastError = error;
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Failed to connect to PostgreSQL database.');
 };
 
 const fetchMySqlCatalog = async (connectionString: string, schemaFilter?: string): Promise<Catalog> => {
-  const connection = await createConnection(connectionString);
+  const details = parseMySqlConnectionDetails(connectionString);
+  const resolvedHosts = await resolveHostWithFallback(details.hostname);
 
-  try {
+  if (resolvedHosts.length === 0) {
+    throw new Error(`Unable to resolve host: ${details.hostname}`);
+  }
+
+  let lastError: unknown = null;
+
+  for (const resolvedHost of resolvedHosts) {
+    const connection = await createConnection({
+      host: resolvedHost,
+      port: details.port,
+      user: details.username,
+      password: details.password,
+      database: details.database,
+      ssl: {
+        servername: details.hostname,
+      } as never,
+    });
+
+    try {
     const databaseName = schemaFilter?.trim() || getDatabaseNameFromUri(connectionString);
 
     if (!databaseName) {
@@ -408,16 +515,21 @@ const fetchMySqlCatalog = async (connectionString: string, schemaFilter?: string
       [databaseName],
     );
 
-    return {
-      tables: tablesRows as TableRow[],
-      columns: columnsRows as ColumnRow[],
-      primaryKeys: primaryKeysRows as PrimaryKeyRow[],
-      uniques: uniqueRows as UniqueConstraintRow[],
-      foreignKeys: foreignKeysRows as ForeignKeyRow[],
-    };
-  } finally {
-    await connection.end();
+      return {
+        tables: tablesRows as TableRow[],
+        columns: columnsRows as ColumnRow[],
+        primaryKeys: primaryKeysRows as PrimaryKeyRow[],
+        uniques: uniqueRows as UniqueConstraintRow[],
+        foreignKeys: foreignKeysRows as ForeignKeyRow[],
+      };
+    } catch (error) {
+      lastError = error;
+    } finally {
+      await connection.end().catch(() => undefined);
+    }
   }
+
+  throw lastError instanceof Error ? lastError : new Error('Failed to connect to MySQL database.');
 };
 
 const fetchSqliteCatalog = async (connectionString: string, schemaFilter?: string): Promise<Catalog> => {
@@ -757,10 +869,6 @@ export const importDatabaseSchema = async (
 
   if (dialect === 'mysql' && url.protocol !== 'mysql:') {
     throw new Error('Only MySQL connection strings are supported for this importer.');
-  }
-
-  if (dialect === 'sqlite' && url.protocol !== 'file:' && !input.connectionString.trim().startsWith('sqlite://')) {
-    // accept raw filesystem paths too
   }
 
   const catalog = await fetchCatalog(dialect, input.connectionString.trim(), input.schema);
