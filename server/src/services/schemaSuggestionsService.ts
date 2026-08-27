@@ -65,7 +65,7 @@ export type SqlExportResponse = {
   sqlCommands: string;
 };
 
-const GROQ_MODEL = process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile';
+const GROQ_MODEL = process.env.GROQ_MODEL ?? 'openai/gpt-oss-120b';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null;
