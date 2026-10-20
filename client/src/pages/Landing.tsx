@@ -152,13 +152,27 @@ function Landing() {
             <img src='/sicon.png' alt='' className='h-6 w-6 invert' />
             <span className='text-sm font-semibold tracking-[0.3em]'>SHAY</span>
           </a>
-          <button
-            type='button'
-            onClick={() => openAuthModal('signin')}
-            className='rounded-full border border-white/15 bg-white/5 px-5 py-2 text-sm text-white transition hover:bg-white/10'
-          >
-            Sign in
-          </button>
+          <div className='flex items-center gap-3'>
+            <a
+              href='https://github.com/Hollow3k/shay'
+              target='_blank'
+              rel='noopener noreferrer'
+              aria-label='Star Shay on GitHub'
+              className='flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-5 py-2 text-sm text-white transition hover:bg-white/10'
+            >
+              <svg viewBox='0 0 24 24' className='h-4 w-4 fill-current' aria-hidden='true'>
+                <path d='M12 2.5l2.94 5.96 6.58.96-4.76 4.64 1.12 6.55L12 17.52l-5.88 3.09 1.12-6.55L2.48 9.42l6.58-.96L12 2.5z' />
+              </svg>
+              Star
+            </a>
+            <button
+              type='button'
+              onClick={() => openAuthModal('signin')}
+              className='rounded-full border border-white/15 bg-white/5 px-5 py-2 text-sm text-white transition hover:bg-white/10'
+            >
+              Sign in
+            </button>
+          </div>
         </nav>
       </header>
 
